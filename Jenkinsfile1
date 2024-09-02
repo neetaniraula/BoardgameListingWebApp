@@ -1,39 +1,108 @@
 pipeline {
     agent any
-    
+
     tools {
         maven 'maven3'
         jdk 'jdk17'
     }
-    
+
     environment {
-        SCANNER_HOME= tool 'sonar-scanner'
+        SCANNER_HOME = tool 'sonar-scanner'
     }
 
-    stages {        
-        stage('Compile') {
+    stages {
+        stage('Git Checkout') {
             steps {
-                sh "mvn compile"
+                git 'https://github.com/neetaniraula/BoardgameListingWebApp.git'
             }
         }
-        
-        stage('Test') {
+
+        stage('Code-Compile') {
             steps {
-                sh "mvn test"
+                sh "mvn clean compile"
             }
         }
-        
-        stage('SonarQube') {
+
+        stage('Unit-Test') {
+            steps {
+                sh "mvn clean test"
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh "trivy fs --format json -o trivy-report.json ."
+            }
+        }
+
+        stage('Sonar Analysis') {
             steps {
                 withSonarQubeEnv('sonar') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Boardgame -Dsonar.projectKey=Boardgame -Dsonar.java.binaries=target/classes '''
+                    sh """
+                    $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Devops-CICD \
+                    -Dsonar.java.binaries=. \
+                    -Dsonar.projectKey=Devops-CICD
+                    """
                 }
             }
         }
-        
-        stage('Build') {
+
+        stage('Quality Gate Check') {
             steps {
-                sh "mvn package"
+                script {
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+
+        stage('Code Build') {
+            steps {
+                sh "mvn clean package"
+            }
+        }
+
+        stage('Deploy to Nexus') {
+            steps {
+                withMaven(globalMavenSettingsConfig: 'global-settings-nexus', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                    sh "mvn deploy"
+                }
+            }
+        }
+
+        stage('Docker Build and Tag') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker build -t neeta095/boardwebapp:latest ."
+                        
+                    }
+                }
+            }
+        }
+
+        stage('Docker Image Scan') {
+            steps {
+                sh "trivy image neeta095/boardwebapp:latest"
+            }
+        }
+
+        stage('Docker Push Image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker push neeta095/boardwebapp:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Application to Container') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-cred', toolName: 'docker') {
+                        sh "docker run -d -p 8085:8080 neeta095/boardwebapp:latest"
+                    }
+                }
             }
         }
     }
